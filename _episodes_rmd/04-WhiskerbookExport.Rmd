@@ -1,0 +1,329 @@
+---
+title: "Whiskerbook Post-Export"
+objectives:
+- "Perform data wrangling and manipulation of camera trap data"
+- "Create the necessary formats for data to be input into oSCR"
+questions: 
+- "How to manipulate data for descriptive information"
+- "How can we organize data using dplyr?"
+- "How can we organize data for input into oSCR?"
+
+teaching: 60
+exercises: 30
+source: Rmd
+keypoints:
+- "Use dplyr to get basic descriptive information about the number of individuals"
+- "organize encounters and stations in the correct format for oSCR"
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Here are a few of the packages we will be using in this session. Let's load them first thing. 
+
+```{r load-libraries, echo = FALSE, results='hide', warning = FALSE, message = FALSE}
+library(sf)
+library(dplyr)
+library(stringr)
+```
+
+We will import the Whiskerbook file that was exported from the website interface. We are finished with the individual identification tasks. These are the raw data that were downloaded and then annotated with labels for whether the photo capture was high or low quality, and if the encounter showed the left or right side of the animal only. 
+
+```{r}
+setwd("Your Working Directory/WhiskerbookTrainingMaterials/")
+Wildbook<-read.csv("Whiskerbook_export.csv")
+```
+
+Let's do some quick data crunching to find out how many individuals we have in our dataset. 
+
+```{r, message=FALSE}
+#To find the number of individuals that are in the dataset
+IndividualsCount<-Wildbook%>%
+  count(Name0.value, sort = TRUE) 
+
+IndividualsCount2<-IndividualsCount%>%
+  count(n, sort = TRUE) 
+
+Individuals<-unique(Wildbook$Name0.value)
+
+```
+
+
+
+
+```{r}
+#To find the number of encounters on each side of the animal and quality
+Sides<-Wildbook%>%
+  group_by(Side, Quality)%>%
+  count(sort = TRUE) 
+```
+ 
+
+
+> ## Challenge: Individuals and Sides 
+
+> 
+> Answer the following questions:
+> 
+> 1. How many individuals do we have that were detected once? How many individuals were detected more than once?
+> > All of the individuals were detected more than once. There were two individuals detected twice. 
+>
+> 1. What if we wanted to find out how many individuals were detected in each of the years 2012 and 2013?
+> > ```{r}
+> > Individuals_Date<-Wildbook%>%
+    group_by(Encounter.year)%>%
+    count(Name0.value, sort = TRUE) 
+> > Individuals_Date_Totals<-Individuals_Date%>%
+      group_by(Encounter.year)%>%
+     count() 
+> > 
+> > ```
+> {: .solution}
+{: .challenge}
+
+
+```{r}
+#To format dates into a date object we have to combine the month, day and year columns together
+Wildbook$date_Time<-paste(Wildbook$Encounter.year, Wildbook$Encounter.month, sep="-")
+Wildbook$date_Time<-paste(Wildbook$date_Time, Wildbook$Encounter.day, sep="-")
+dateFormat<-"%Y-%m-%d"
+Wildbook$date_Time<-as.Date(Wildbook$date_Time,format= dateFormat)
+```
+
+
+Load the metadata
+
+```{r}
+Metadata<-read.csv("Metadata_CT_2012_2.csv")
+setdiff(Wildbook$Encounter.locationID, Metadata$Trap.site)
+Wildbook2<-merge(Metadata, Wildbook, by="Trap.site", by.y="Encounter.locationID", all=TRUE)
+```
+
+Challenge how to fix these missed entries? From a previous lesson we learned how to manipulate the data to have matching file names. 
+
+```{r}
+Metadata$Trap.site<-str_replace(Metadata$Trap.site,"C18_Khandud","C18_Khundud")
+Metadata$Trap.site<-str_replace(Metadata$Trap.site
+,"C26_Wargand Payan","C26_Wargand_Payan")
+Metadata$Trap.site<-str_replace(Metadata$Trap.site
+,"C27_Ragi Jurum","C27_Ragi_Jurem")
+Metadata$Trap.site<-str_replace(Metadata$Trap.site
+,"C30_Wargand Payan","C30_Wargand_Payan")
+Metadata$Trap.site<-str_replace(Metadata$Trap.site
+,"C32_Wargand Bala","C32_Wargand_Bala")
+Metadata$Trap.site<-str_replace(Metadata$Trap.site
+,"C45_Avgarch" ,"C45_Avgach")
+Metadata$Trap.site<-str_replace(Metadata$Trap.site
+,"C5_Ishmorg" ,"C5_Ishmorgh")
+```
+
+```{r}
+setdiff(Wildbook$Encounter.locationID, Metadata$Trap.site)
+```
+
+```{r}
+Metadata<-Metadata[which(Metadata$Trap.site %in% Wildbook$Encounter.locationID),]
+```
+
+
+```{r}
+write.csv(Metadata, "Metadata.csv")
+```
+
+
+
+Create a subset of data to work with
+```{r}
+
+Wildbook_points<-Wildbook2[,c("Name0.value","Encounter.decimalLongitude", "Encounter.decimalLatitude", "Trap.site", "date_Time", "Side","Quality", "Juvenilles") ]
+
+colnames(Wildbook_points)<-c("Marked.Individual", "Latitude", "Longitude", "Location.ID","date_Time" ,"Side", "Quality","Juvenilles")
+
+
+Wildbook_points_coords<-unique(Wildbook_points[,c(2,3,4)])
+
+```
+
+
+```{r}
+library(sf)
+wgs84_crs = "+init=EPSG:4326"
+UTM_crs = "+init=EPSG:32643"
+
+Wildbook_points_coords<-Wildbook_points_coords[complete.cases(Wildbook_points_coords),]
+
+Wildbook_pts_latlong<-st_as_sf(Wildbook_points_coords, coords = c("Latitude","Longitude"), crs = wgs84_crs)
+
+Wildbook_pts_utm<-st_transform(Wildbook_pts_latlong, crs = UTM_crs)
+
+```
+
+
+```{r}
+plot(Wildbook_pts_latlong[1])
+```
+
+
+
+```{r}
+Wildbook_pts_utm_df<- st_coordinates(Wildbook_pts_utm)
+
+Wildbook_points_coords<-cbind(Wildbook_points_coords, Wildbook_pts_utm_df)
+
+Wildbook_points<-merge(Wildbook_points_coords, Wildbook_points, by=c("Location.ID", "Latitude", "Longitude"))
+
+```
+
+```{r}
+Wildbook_points$Session<-1
+Wildbook_points$Occassion<-1
+Wildbook_points$species = "Snow Leopard"
+```
+
+
+Next, we will use the camTrapR package to create a matrix of camera operations. We will use our metadata with the dates the cameras were intially deployed and then taken down. The package can also accommodate any problems with the cameras during the session, for example, if one camera had a technical issue and had to be taken down and replaced a month later, that would be included in separate columns for problems. The result of this function is a site x dates matrix of which days the cameras were operational.
+
+```{r}
+
+dateormat <- "%Y-%m-%d"
+
+Metadata$Start<-as.Date(Metadata$Start)
+Metadata$End<-as.Date(Metadata$End)
+
+# alternatively, use "dmy" (requires package "lubridate")
+library(camtrapR)
+camop_problem <- cameraOperation(CTtable      = Metadata,
+                                 stationCol   = "Trap.site",
+                                 setupCol     = "Start",
+                                 retrievalCol = "End",
+                                 hasProblems  = FALSE,
+                                 dateFormat   = dateFormat
+)
+
+```
+
+
+The oSCR program requires the data come in a specific format to run the models. Here we will wrangle the data into the proper format. In our case, we will simply subset our dataframe into the necssary columns.
+
+The first dataframe we want to create is a record of the individual occurrences with the dates, trap site, side and quality. 
+
+```{r}
+#create the subset dataframe
+edf<-Wildbook_points[,c("Marked.Individual", "date_Time","Location.ID","Side","Quality", "Juvenilles")]
+
+#convert the dates to date format
+edf$date_Time<-as.Date(edf$date_Time)
+```
+
+
+We will also create a dataframe based on site and GPS coordinates. Here, we want to use the data in UTM coordinates.
+
+```{r}
+tdf<-unique(Wildbook_points_coords[,c("Location.ID","X", "Y")])
+```
+
+Now, we will create a merged dataframe with all elements both the dataframe with the GPS coordinates and the dataframe with the information for the individual IDs.
+
+We will save this file for the next lesson.
+
+```{r}
+edf_tdf<-merge(edf,tdf,by="Location.ID")
+```
+
+
+Eliminate any duplicated values, this table containes duplicates from the way whiskerbook can create multiple encounters from the same occurrence, so the data are a bit messy in this sense.
+
+```{r}
+write.csv(edf_tdf, "edf_tdf.csv")
+```
+
+
+
+The oSCR program requires we append the camera operation matrix to the table with the GPS coordinates.
+
+In order to make this as clear as possible, we will rename our camera operations matrix with numbers for each date, instead of the dates themselves. 
+```{r}
+#create dataframe objects for the camera operations matrix and the detections.
+camop_problem<-as.data.frame(camop_problem)
+detectionDays<-as.data.frame(colnames(camop_problem))
+
+#create a sequential numeric vector for the number of detection dates
+detectionDays$Occasion<-1:nrow(detectionDays)
+
+#rename the columns
+colnames(detectionDays)<-c("Dates","Occasion")
+
+#rename the columns with the numeric vector
+colnames(camop_problem)<-detectionDays$Occasion
+
+#make a new column of the trap site names so we can merge the dataframes
+camop_problem$Location.ID<-rownames(camop_problem)
+```
+
+```{r}
+setdiff(tdf$Location.ID, camop_problem$Location.ID)
+```
+
+
+```{r}
+setdiff(tdf$Location.ID, edf$Location.ID)
+```
+
+```{r}
+camop_problem$Location.ID
+```
+
+
+```{r}
+setdiff(tdf$Location.ID, camop_problem$Location.ID)
+```
+
+
+
+```{r}
+#merge the GPS coordinates table with the camera operations matrix
+tdf<-merge(tdf, camop_problem, by="Location.ID", all=TRUE)
+
+#remove the column with the trap names from the camera operations matrix
+camop_problem<-camop_problem[,-ncol(camop_problem)]
+
+```
+
+```{r}
+#convert the individual ID's and locations to sequential numbers for clarity.
+edf$ID<-as.integer(as.factor(edf$Marked.Individual))
+```
+
+Check to make sure the names of the Location.ID columns match.
+```{r}
+setdiff(edf$Location.ID, tdf$Location.ID)
+setdiff(tdf$Location.ID, edf$Location.ID)
+```
+
+
+
+Write the files to csv so we can use them later. 
+```{r}
+write.csv(edf, "edf.csv")
+write.csv(tdf, "tdf.csv")
+```
+
+
+
+
+> ## Challenge: Camera Operability Matrix
+
+> 
+> Answer the following questions:
+> 
+> 1. How do we format our data if our camera traps had an issue and were not running for several weeks? 
+> > The cameraOperation matrix has a field called hasProblems that would be set equal to TRUE. The fields in the CTtable would be changed to include fields "Problem_from" and "Problem_to"
+
+> {: .solution}
+{: .challenge}
+
+{% include links.md %}
+
+
