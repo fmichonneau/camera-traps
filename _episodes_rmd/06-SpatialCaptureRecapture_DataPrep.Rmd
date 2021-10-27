@@ -1,0 +1,305 @@
+---
+title: "Spatial-Capture Recapture Data Preparation"
+objectives:
+- "Perform spatial capture recapture modeling data preparation"
+- "Split data into intervals for  months"
+questions:
+- "How to setup  single 3 month season oSCR data?"
+- "How to setup our oSCR data that exclude areas of high elevation?"
+- "What is a buffer mask and how to parameterize it?"
+teaching: 60
+exercises: 30
+keypoints:
+- "Format data to only include data from a single session"
+- "Know how to parameterize a buffer mask with covariates"
+- "Know how to clip a buffer mask to a shapefile boundary"
+
+source: Rmd
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load-libraries, echo = FALSE, results='hide', warning = FALSE, message = FALSE}
+library(devtools)
+install_github("jaroyle/oSCR")
+```
+
+Change working directory and load several packages, including oSCR, raster, dplyr, and camtrapR.
+```{r load-libraries-2, echo = FALSE, results='hide', warning = FALSE, message = FALSE}
+library("oSCR")
+library(raster)
+library(dplyr)
+library(camtrapR)
+```
+Read in our tdf, edf, and metadata files that we created in the previous lesson.
+
+```{r}
+tdf<-read.csv("tdf.csv", stringsAsFactors = TRUE)
+edf<-read.csv("edf.csv", stringsAsFactors = TRUE)
+Metadata<-read.csv("Metadata.csv")
+```
+
+There are three raster layers that are suitable for this analysis, including the roughness, topographic position index and elevation. To generate these layers, the elevation was downloaded as an SRTM file, the roughness and topographic position index were calculated using the terrain function in the terrain package in program R.
+
+```{r}
+roughness<-raster("Rasters/roughness.tif")
+TPI<-raster("Rasters/TPI2.tif")
+elev<-raster("Rasters/elev.tif")
+```
+
+First, we have to change the date formats to be suitable for the dates to be recognized. Right now, they are in character string format.
+
+```{r}
+#specify the format for the dates
+dateFormat <- "%Y-%m-%d"
+
+#convert the character strings to date formats
+Metadata$Start<-as.Date(Metadata$Start,format= dateFormat)
+Metadata$End<-as.Date(Metadata$End, format=dateFormat)
+```
+
+Next, we will use the cameraOperation function in the camtrapR package to generate a site x date matrix for the dates and sites that the cameras were operational. Notice there are several functions that we are not using, although you may for your data. There are options here for setting cameras which have problems for example and were decommissioned for a certain amount of time.
+
+```{r}
+# alternatively, use "dmy" (requires package "lubridate")
+camop_problem <- cameraOperation(CTtable      = Metadata,
+                                   stationCol   = "Trap.site",
+                                   setupCol     = "Start",
+                                   retrievalCol = "End",
+                                   writecsv     = FALSE,
+                                   hasProblems  = FALSE,
+                                   dateFormat   = dateFormat)
+```
+
+
+We need to generate the time intervals for our sessions. In this case, our data is around 4 months, which is too long to assume population closure. We will split our data into 2 month sessions by using the dyplyr package.
+```{r}
+#Extract the dates of our surveys that the cameras were operational and create a dataframe
+date_cameraop<-as.data.frame(colnames(camop_problem))
+#name the column of the new dataframe
+colnames(date_cameraop)<-"date_Time"
+#convert the characters to dates again
+date_cameraop$date_Time<-as.Date(date_cameraop$date_Time)
+
+#Split the sessions into 2 month time intervals using the "cut" function with 3 month breaks.
+date_cameraop<-date_cameraop %>%
+ mutate(Session_3m = cut(date_Time, breaks= "3 months"))
+
+```
+
+```{r}
+
+#convert the sessions to factors, and then to numbers
+date_cameraop$Session_3m<-as.factor(date_cameraop$Session_3m)
+date_cameraop$Session_3m<-as.numeric(date_cameraop$Session_3m)
+
+#count how many days are within each of the two month intervals
+date_cameraop%>%
+  group_by(Session_3m)%>%
+  count()
+
+#number sequentially the days within each of the grouped 2 month sessions
+date_cameraop<-date_cameraop%>%
+    group_by(Session_3m)%>%
+    mutate(Session_grouped =1:n())
+
+```
+
+```{r}
+#subset the sessions to only one session that we can model
+dates_f<-date_cameraop[which(date_cameraop$Session_3m==1),]
+#extract out two columns
+dates_f_sub<-dates_f[,c("date_Time", "Session_grouped")]
+
+```
+
+We will subset our camera trap operation matrix to include data that are in session 1, and we can format the data a bit.
+```{r}
+#subset the dates of session 1
+camop_problem<-camop_problem[,as.character(dates_f$date_Time)]
+
+#remove any rows with only NA values (because those cameras were not setup during session 1!)
+camop_problem <- camop_problem[rowSums(is.na(camop_problem)) != ncol(camop_problem), ]
+
+#convert back to a dataframe
+camop_problem<-as.data.frame(camop_problem)
+#convert NA values to 0 because this will go in our tdf dataframe, which is a list of which cameras were operational.
+camop_problem[is.na(camop_problem)]<-0
+#change the dates to factors
+colnames(camop_problem)<-seq(1,length(camop_problem), by=1)
+
+#create an object with the number of days in the matrix
+K=length(camop_problem)
+
+```
+
+There are further formatting operations that have to be done on the dataframes for the tdf and edf data that we had prepared earlier. First we start with the tdf dataframe.
+```{r}
+#subset our tdf matrix of GPS located station locations by the cameras that were actually operational during our session.
+tdf2<-tdf[which(tdf$Location.ID %in% rownames(camop_problem)),]
+tdf2<-cbind(tdf2[,1:4], camop_problem)
+```
+
+The edf dataframe that can be sorted by the session 1 and we also want to sort only high quality data with no juvenilles (this should be review)
+```{r}
+
+#set the edf dataframe dates
+edf$date_Time<-as.Date(edf$date_Time, format= dateFormat)
+#merge with the table with the 3m session intervals
+edf<-merge(edf, dates_f, by="date_Time")
+#convert the sessions to factors, and then to numbers
+edf$Session_3m<-as.factor(edf$Session_3m)
+edf$Session_3m<-as.numeric(edf$Session_3m)
+
+#subset to Session 1
+edf_sub = edf[which(edf$Session_3m==1),]
+#subset high quality
+edf_high<-edf_sub[which(edf_sub$Quality == "H"),]
+#remove juvenilles if there are any
+if(sum(edf_high$Juvenilles == "J", na.rm=T)!=0){
+  edf_high<-edf_high[-which(edf_high$Juvenilles == "J"),]
+}
+
+#merge the dates we had created earlier to get which number from the sequence dates for each of the days in our edf. This column is important for the next step.
+
+edf_high<-edf_high[which(edf_high$Location.ID %in% unique(tdf2$Location.ID)),]
+
+
+```
+
+
+
+
+Next we will use the data2oscr function to format the data for our model to an oSCR data object. We can use
+```{r}
+
+#format the data from our edf_high and tdf2 dataframes and input into the data2oscr function
+data <- data2oscr(edf = edf_high,
+                  tdf = list(tdf2[,-1]),
+                  sess.col = which(colnames(edf_high) %in% "Session_3m"),
+                  id.col = which(colnames(edf_high) %in% "Marked.Individual"),
+                  occ.col = which(colnames(edf_high) %in% "Session_grouped"),
+                  trap.col = which(colnames(edf_high) %in% "Location.ID"),
+                  K = K,
+                  ntraps = nrow(tdf2))
+
+```
+
+Load the park boundary shapefile.
+```{r}
+library(sf)
+
+#read in the shapefile for the park boundary that we created earlier to reflect the hard boundaries of a river in the north part of the study area. This was a manually created shapefile for precision, using a drawing create polygon shapefile feature in GIS.
+
+buffer<-st_read("Shapefiles/Wakhan_ParkBoundary_Largest.shp")
+```
+
+
+
+Next, we will generate the buffer mask based on the parameters from the SCRFrame that we just generated. We will also use the sf package to perform our buffer creation step.
+
+```{r}
+
+#use the SCRframe, which is used for fitting the models, and for generating our initial minimum distance removed parameter which we will use for the buffer mask creation.
+
+scrFrame  <- make.scrFrame(caphist=data$y3d,
+                           traps=data$traplocs,
+                           trapCovs=NULL,
+                           trapOperation=data$trapopp)
+
+#Use the 1/2 minimum distance removed to generate an inital estimate for sigma
+sigma<-scrFrame$mmdm/2
+
+#The sigma parameter should stay constant through all models, here will we use the dataframe generated sigma. You can experiment with this to see how these parameters may change for each session of your model.
+
+#Eventually, we want to generate a resolution that will stay constant and a buffer mask size that will change.
+
+ss<-make.ssDF(scrFrame, sigma*4, sigma)
+
+
+```
+
+
+We will use the points from our tdf2 dataframe of the GPS coordinates for the camera traps used during the duration of our study.
+
+```{r}
+
+# Assign an initial sigma based on 1/2 minimum distance removed
+buff_sigma <- scrFrame$mmdm/2*4  #change to m
+
+```
+
+
+Generate the state space object that we will use for the models
+```{r}
+
+#The buffer size will change every session, although the 800 model resolution will stay the same for every session. If you run the models for all of your sessions with the same buffer size for every model and allow the resolution to change, you should see that the resolution will be roughly the same between sessions.
+
+#In SECR models, it's customary to allow the buffer mask size to vary and keep the resolution constant.
+
+#Simply guess a value for a resolution at first, and run the models
+ss<-make.ssDF(scrFrame, buff_sigma, 800)
+# Possible trap locations to 2-column object (dataframe or matrix)
+ss_coords<-as.data.frame(ss[[1]][,1:2])
+allpoints <-  st_as_sf(ss_coords, coords=c("X","Y"),crs = crs(buffer) )
+allpoints<-st_intersection(allpoints, buffer)
+```
+
+
+Once our models are run, we will need some important information about the grid size and resolution of the SECR inputted data, so that we can backtransform the estimates to 100km2.
+```{r}
+#find out how far apart the points are in terms of distance
+gridDistance_1<-pointDistance(allpoints[1,1:2], allpoints[2,1:2], lonlat=FALSE, allpairs=FALSE)
+#we discover the actual grid distance between points if only 725m
+resolution=(gridDistance_1*gridDistance_1)/1000000
+#We use this resolution to then create the multiplication factor for our models
+multiplicationfactor=1/(resolution/100)
+```
+
+Extract environmental covariates for the points in the state space object.
+
+```{r}
+# Extract elevation and slope for the points in the state space object.
+allpoints_elev <- extract(elev, allpoints)
+allpoints_TPI <- extract(TPI, allpoints)
+allpoints_roughness <- extract(roughness, allpoints)
+```
+
+Subset the points of the state space object to reasonable biological limits. For this example, we will subset the elevation covariate to those locations that are below 5600m in elevation because we know from previous research using GPS collaring that the animals do not climb that high. We will also exclude any values that are NA values from the state space (in case there are any). Finally we divide by 1000 to get the traps back into units of kilometers.
+
+```{r}
+# Subset possible trap locations according to logistic constraints
+allpoints2<-st_coordinates(allpoints)
+alltraps <- allpoints2[allpoints_elev < 5600  &
+                        !is.na(allpoints_elev) &
+                        !is.na(allpoints_TPI)&
+                        !is.na(allpoints_roughness),]/1000
+```
+
+Plot the result to see the area of integration for this session
+```{r}
+# Plot all of the traps below the now subsetted (usable) traps (now called "alltraps")
+plot(allpoints2/1000, pch = 16, cex = 0.5, col = "grey",
+     asp = 1, axes  =FALSE, xlab = "", ylab = "")
+points(alltraps, pch = 16, cex = 0.5, col = "blue")
+```
+
+
+Create a dataframe object for the state space traps,
+```{r}
+alltraps_df <- data.frame(X=alltraps[,"X"]*1000,
+                          Y=alltraps[,"Y"]*1000)
+alltraps_sp <- st_as_sf(alltraps_df,coords=c("X","Y"))
+st_crs(alltraps_sp) <- "+proj=utm +zone=43 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+```
+
+> ## Challenge: Second three month session
+
+>
+> Perform the following tasks
+>
+> 1. Save your R file and then save another one for the second session.
+>2. Edit the entire file to create a uniquely named tdf and alltraps_df for the second >session only. These objects should not overwrite the ones you made for the first >session.
+>3. If you're able to, edit your R code to run a loop that will automatically create a >list of tdf objects, and a list of alltraps_df objects, a list of camera trap days, and >a list of number of traps per sessions for the two sessions.
